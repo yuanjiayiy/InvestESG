@@ -1,0 +1,41 @@
+# RL params
+rl_test_episodes: 100000
+eps_start: 1.0
+eps_end: 0.02
+eps_decay: 500000
+target_update: 1000
+initial_memory: 2000
+memory_size: 5000000  # 100000 and 1000000 did not work well
+n_actions: 7
+metacontroller: 'multiagent'
+total_timesteps: 5000000
+multithreading: False
+use_gpu: False
+
+# Learning params
+batch_size: 256
+lr: 0.00003
+n_episodes: 50000
+update_every: 500
+n_epochs: 4
+ent_coef: 0.01
+
+# Logistics params
+save_model_episode: 10000
+visualize_every: 1  # how many episodes before making a video
+log_episode: 500
+log_step: 1000
+version: "default"
+print_every: 10
+base_save_path: ''
+
+# Loss weights
+dqn_loss_weight: 1
+
+# architecture
+fc_direction: 8
+cumulants: 64
+filters: 32
+kernel_size: 3
+fc: 256
+verbose: 0
