@@ -1,6 +1,8 @@
 
 # InvestESG: A Multi-Agent Reinforcement Learning Benchmark for ESG Disclosure and Corporate Climate Investment
 
+## [arxiv](http://arxiv.org/abs/2411.09856) | website (coming soon)
+
 ![](https://github.com/yuanjiayiy/InvestESG/blob/main/intro.png?raw=true)
 Welcome to the official repository for **InvestESG**, a multi-agent reinforcement learning (MARL) benchmark designed to analyze the effects of Environmental, Social, and Governance (ESG) disclosure mandates on corporate climate investments. This repository contains code implementations in both PyTorch and JAX.
 
