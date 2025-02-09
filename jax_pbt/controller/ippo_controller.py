@@ -14,6 +14,7 @@ from ..env import Env, EnvConst, EnvState, Observation
 from ..model.models import NNConfig
 from ..utils import RoleIndex, get_action_dim, rng_batch_split, select_env_agent, set_env_agent_elements, set_env_agent_elements_tree_map
 from .base_controller import BaseController
+import random
 
 
 RunnerState: TypeAlias = tuple[jax.Array, Sequence[PPOTrainState], Sequence[PPOAgentState], EnvState, Observation]
@@ -35,7 +36,6 @@ class IPPOController(BaseController):
         self.env_fn: Env = env_fn
 
         # init agents
-        # TODO: different obs_space/act_space for agents with different roles?
         if hasattr(env_fn, "agent_lst"):
             self.agent_fn_lst = []
             for agent in env_fn.agent_lst:
@@ -58,12 +58,14 @@ class IPPOController(BaseController):
         return rng, train_state_lst, agent_state_lst, env_state, obs
 
     def rollout(self, runner_state: RunnerState, env_const: EnvConst, agent_roles_lst: Sequence[RoleIndex]) -> tuple[RunnerState, PPOExperience, dict]:
-        def step(runner_state: RunnerState, unused=None) -> tuple[RunnerState, tuple[PPOExperience, dict]]:
-            rng, train_state_lst, agent_state_lst, env_state, all_obs = runner_state
+        company_agents = [agent_name for agent_name in self.env_fn.agent_lst if agent_name.startswith("company_")]
+        selected_companies = random.sample(company_agents, (len(company_agents) + 1) // 2)
 
-            # TODO allow different actions for different agents in the environment?
+        def step(runner_state_transition: tuple[RunnerState, PPOExperience], time=None) -> tuple[tuple[RunnerState, PPOExperience], tuple[PPOExperience, dict]]:
             all_action = dict()
             all_clipped_action = dict()
+            runner_state, prev_transition = runner_state_transition
+            rng, train_state_lst, agent_state_lst, env_state, all_obs = runner_state
             for agent in self.env_fn.agent_lst:
                 action_space = self.env_fn.get_action_space(agent)
                 all_action[agent] = jnp.zeros([self.num_envs, get_action_dim(action_space)])
@@ -76,7 +78,38 @@ class IPPOController(BaseController):
                 rng, rng_action = rng_batch_split(rng, len(agent_roles))
                 next_agent_state, action, log_p, val = jax.vmap(agent_fn.rollout_step, in_axes=(0, None, 0, 0))(
                     rng_action, train_state, agent_state, obs
-                ) # TODO: remove None
+                )
+                if self.env_fn._env.locked_period != 1:
+                    # do inference every <locked_period> step
+                    action, log_p, val = jax.lax.cond(
+                        time % self.env_fn._env.locked_period == 0,
+                        lambda _: jax.vmap(agent_fn.rollout_step, in_axes=(0, None, 0, 0))(rng_action, train_state, agent_state, obs)[1:],
+                        lambda _: (prev_transition.action[agent_name], prev_transition.log_p[agent_roles.env_idx, agent_roles.agent_idx], prev_transition.val[agent_roles.env_idx, agent_roles.agent_idx]),
+                        None
+                    )
+                
+                def generate_array(num_envs, dtype=jnp.float32, action_space=action_space, key=None):
+                    if key is None:
+                        key = jax.random.PRNGKey(0)  # Initialize the random key if not provided
+                    # Sample 'x' from uniform distribution
+                    x = jax.random.uniform(key, shape=(num_envs,), minval=0.005, maxval=0.01, dtype=dtype)
+                    # Create the array with shape (num_envs, 3) where other columns are 0
+                    result = jnp.stack([x, jnp.zeros_like(x), jnp.zeros_like(x)], axis=1)
+                    result = 2 * (result / action_space.high) - 1
+                    return result
+                
+                # do hard-coded mitigation first 5 years
+                if self.env_fn._env.real_data_seeding:
+                    if agent_name in selected_companies:
+                        action_space = self.env_fn.get_action_space(agent_name)
+                        dtype = jnp.int32 if agent_name.startswith("investor_") else jnp.float32 
+                        action = jax.lax.cond(
+                            time >= 5,
+                            lambda _: jax.vmap(agent_fn.rollout_step, in_axes=(0, None, 0, 0))(rng_action, train_state, agent_state, obs)[1],
+                            lambda _: generate_array(self.num_envs, dtype=dtype, action_space=action_space, key=rng),
+                            None
+                        )
+
                 # Clipping
                 if isinstance(self.env_fn.get_action_space(agent_name), Box):
                     action_space = self.env_fn.get_action_space(agent_name)
@@ -85,17 +118,9 @@ class IPPOController(BaseController):
                     clipped = jnp.clip(clipped, action_space.low, action_space.high)
                 else:
                     clipped = action
-                # print("actionaction", i, agent_name)
-                # print('all_action.shape', all_action[agent_name].shape)
-                # print('action.shape', action.shape)
                 all_action[agent_name] = action
                 all_clipped_action[agent_name] = clipped
                 
-                # print("new")
-                # print('all_action.shape', all_action[agent].shape)
-
-                # print('all_log_p.shape', all_log_p.shape)
-                # print('log_p.shape', log_p.shape)
                 all_log_p = set_env_agent_elements_tree_map(all_log_p, log_p, agent_roles)
                 all_val = set_env_agent_elements_tree_map(all_val, val, agent_roles)
                 next_agent_state_lst.append(next_agent_state)
@@ -109,13 +134,7 @@ class IPPOController(BaseController):
                 next_agent_state_lst[i] = self.agent_fn_lst[i].agent_state_reset(next_agent_state_lst[i], done)
 
             next_runner_state = (rng, train_state_lst, next_agent_state_lst, next_env_state, all_next_obs)
-            # print('action.shape', all_action)
-            # print('reward.shape', all_reward)
-            # print('done.shape', all_done)
-            # print('log_p.shape', all_log_p)
-            # print('val.shape', all_val) # TODO: remove debug infor
-            # jax.debug.print("{}", all_action)
-
+            
             all_agent_state = PPOAgentState(
                 actor_rnn_state=jnp.zeros((self.num_envs, self.num_agents, *agent_state_lst[0].actor_rnn_state.shape[1:])),
                 critic_rnn_state=jnp.zeros((self.num_envs, self.num_agents, *agent_state_lst[0].critic_rnn_state.shape[1:]))
@@ -133,10 +152,46 @@ class IPPOController(BaseController):
                 val=all_val,
                 agent_state=all_agent_state
             )
-            return next_runner_state, (transition, info)
-        runner_state, (buffer, env_info) = jax.lax.scan(
-            step, runner_state, None, self.episode_length
+            return (next_runner_state, transition), (transition, info)
+        
+        init_action = dict()
+        for agent_name in self.env_fn.agent_lst:
+            action_space = self.env_fn.get_action_space(agent_name)
+            dtype = jnp.int32 if agent_name.startswith("investor_") else jnp.float32 
+            init_action[agent_name] = jnp.zeros([self.num_envs, get_action_dim(action_space)], dtype=dtype)
+
+
+        rng, train_state_lst, agent_state_lst, env_state, all_obs = runner_state
+
+        init_transition = PPOExperience(
+                obs=all_obs,
+                action=init_action,
+                reward=jnp.zeros([self.num_envs, self.num_agents]),
+                done=jnp.zeros([self.num_envs, self.num_agents + 1], dtype=bool),
+                log_p=jnp.zeros([self.num_envs, self.num_agents]),
+                val=jnp.zeros([self.num_envs, self.num_agents]),
+                agent_state=PPOAgentState(
+                    actor_rnn_state=jnp.zeros((self.num_envs, self.num_agents, *agent_state_lst[0].actor_rnn_state.shape[1:])),
+                    critic_rnn_state=jnp.zeros((self.num_envs, self.num_agents, *agent_state_lst[0].critic_rnn_state.shape[1:]))
+                )
         )
+
+        time_series = jnp.arange(self.episode_length)
+        episode_length = self.episode_length
+
+        if self.env_fn._env.real_data_seeding:
+            seeding_step = 5
+            runner_state_prev_transition, (_, _) = jax.lax.scan(
+                step, (runner_state, init_transition), jnp.arange(seeding_step), seeding_step
+            )
+            runner_state, init_transition = runner_state_prev_transition
+            time_series = jnp.arange(seeding_step, self.episode_length)
+            episode_length = self.episode_length - seeding_step
+
+        runner_state_prev_transition, (buffer, env_info) = jax.lax.scan(
+            step, (runner_state, init_transition), time_series, episode_length
+        )
+        runner_state, prev_transition = runner_state_prev_transition
         return runner_state, buffer, env_info
     
     def run_epoch(self, runner_state: RunnerState, env_const: EnvConst, agent_roles_lst: Sequence[RoleIndex]) -> tuple[RunnerState, dict]:
@@ -169,7 +224,6 @@ class IPPOController(BaseController):
                 rng, rng_model_update = jax.random.split(rng)
                 train_state, optim_log = agent_fn.learn(rng_model_update, train_state, buffer, advantage, target_val)
             new_train_state_lst.append(train_state)
-        # import pdb; pdb.set_trace()
         
         runner_state = rng, new_train_state_lst, agent_state_lst, env_state, all_last_obs
         return runner_state, {'env_stats': env_stats, 'optim_log': optim_log}
@@ -219,15 +273,13 @@ class IPPOController(BaseController):
                 if len(eval_at_steps) > 0 and env_step > eval_at_steps[0]:
                     eval_at_steps.popleft()
                     tqdm.write("=" * 20 + f"episode {episode} env_step: {env_step} / {self.total_env_steps} " + "=" * 20)
-                    tqdm.write(f"\nEnv stats: {env_stats}\n")
+                    tqdm.write(f"\nEnv stats: {env_stats['return']}\n")
                 
                 d = dict()
                 for i, ret in enumerate(env_stats['return']):
                     d[f"{i} return"] = ret
-                wandb.log(d)
-
                 
-                self.env_fn.log(runner_state[-2]._state, episode)
+                self.env_fn.log(runner_state[-2]._state, episode, d)
                 
                 # reset env manullay
                 rng, train_state_lst, agent_state_lst, env_state, all_obs = runner_state

@@ -8,7 +8,7 @@ from jax_pbt.utils import get_action_dim
 from jaxmarl.environments.spaces import Box, MultiDiscrete
 
 from ..env import Observation, ObservationSpace, ActionSpace
-from .models import NNConfig, RNN, FeatureExtractor # TODO: redo cnn config and others
+from .models import NNConfig, RNN, FeatureExtractor
 
 
 class FeatureModel(nn.Module):
@@ -56,13 +56,12 @@ class Actor(FeatureModel):
             self.policy_layer = NaiveDisrete(output_cardinality=self.action_space)
         elif isinstance(self.action_space, Box):
             from .distribution_layer import DiagGaussianGlobalVariance
-            # TODO: more different action space
             self.policy_layer = DiagGaussianGlobalVariance(output_shape=get_action_dim(self.action_space), high=self.action_space.high, low=self.action_space.low)
         elif isinstance(self.action_space, MultiDiscrete):
             from .distribution_layer import BernoulliDisrete
             self.policy_layer = BernoulliDisrete(output_cardinality=get_action_dim(self.action_space))
-
-        # TODO: add not implemented
+        else:
+            raise NotImplementedError
     
     def __call__(self, rnn_states: jax.Array, obs: Observation) -> tuple[jax.Array, Distribution]:
         embeddings = super().__call__(obs)

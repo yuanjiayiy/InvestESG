@@ -3,4 +3,4 @@ class BaseController:
         pass
 
     def log(self) -> None:
-        pass # TODO
+        pass

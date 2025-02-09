@@ -18,7 +18,6 @@ def rng_batch_split(rng: jax.Array, batch_size: int | Sequence[int] = 1) -> jax.
     rng_batch = jax.random.split(rng_batch, batch_size)
     return rng, rng_batch
 
-# TODO: check @partial(jax.jit, static_argnames=['chunk_length', 'num_minibatches', 'minibatch_num_chunks'])
 def split_into_minibatch(rng: jax.Array, data: struct.PyTreeNode, chunk_length: int, num_minibatches: int | None = 1, minibatch_num_chunks: int | None = None) -> struct.PyTreeNode:
     """Input
         data: [episode_length, batch_size, *data_shape]

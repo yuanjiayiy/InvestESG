@@ -77,10 +77,10 @@ class InvestESGEnv(BaseEnv[InvestESGConst, InvestESGState]):
     def render(self, state, mode="rgb_array"):
         return self._env.render(state=state, mode="rgb_array")
     
-    def log(self, state, episode):
-        # import pdb; pdb.set_trace()
+    def log(self, state, episode, additional_info={}):
         if len(state.history_esg_investment.shape) == 2:
             history_esg_investment = state.history_esg_investment.mean(0)
+            history_loss_amount = state.history_loss_amount.mean(0)
             history_climate_risk = state.history_climate_risk.mean(0)
             history_climate_event_occurs = state.history_climate_event_occurs.mean(0)
             history_company_mitigation_amount = state.history_company_mitigation_amount.mean(0)
@@ -97,9 +97,12 @@ class InvestESGEnv(BaseEnv[InvestESGConst, InvestESGState]):
             history_resilience_investment = state.history_resilience_investment.mean(0)
             history_company_rewards = state.history_company_rewards.mean(0)
             history_investor_rewards = state.history_investor_rewards.mean(0)
+            history_company_bankrupt = state.history_company_bankrupt.mean(0)
+            history_company_margin = state.history_company_margin.mean(0)
 
         else:
             history_esg_investment = state.history_esg_investment
+            history_loss_amount = state.history_loss_amount
             history_climate_risk = state.history_climate_risk
             history_climate_event_occurs = state.history_climate_event_occurs
             history_company_mitigation_amount = state.history_company_mitigation_amount
@@ -116,6 +119,8 @@ class InvestESGEnv(BaseEnv[InvestESGConst, InvestESGState]):
             history_resilience_investment = state.history_resilience_investment
             history_company_rewards = state.history_company_rewards
             history_investor_rewards = state.history_investor_rewards
+            history_company_bankrupt = state.history_company_bankrupt
+            history_company_margin = state.history_company_margin
 
         d = {
             "episode": episode,
@@ -125,7 +130,9 @@ class InvestESGEnv(BaseEnv[InvestESGConst, InvestESGState]):
             "final mitigation investment": history_esg_investment[-1],
             "final greenwash investment": history_greenwash_investment[-1],
             "final resilience investment": history_resilience_investment[-1],
-            "market total wealth": history_market_total_wealth[-1]
+            "market total wealth": history_market_total_wealth[-1],
+            "bankrupt companies": sum(history_company_bankrupt[:,-1]),
+            "final loss amount": history_loss_amount[-1]
         }
 
         for i in range(self._env.num_companies):
@@ -143,16 +150,15 @@ class InvestESGEnv(BaseEnv[InvestESGConst, InvestESGState]):
         for i in range(self._env.num_investors):
             d[f'cumulative investor_{i} capital'] = sum(history_investor_capitals[i])
             d[f'investor_{i} episodal reward'] = sum(history_investor_rewards[i])
-            # total_investment = sum(state.history_investment_matrix[i, :])
-            # d[f'investor_{i} total investment'] = total_investment
-            
-            # for company, investment in enumerate(state.history_investment_matrix[i, :]):
-            #     d[f'investor_{i} investment to company_{company}'] = investment / total_investment if total_investment > 0 else 0
+            total_investment = sum(state.history_investment_matrix[0][i, :])
+            for company, investment in enumerate(state.history_investment_matrix[0][i, :]):
+                d[f'investor_{i} investment to company_{company}'] = investment / total_investment if total_investment > 0 else 0
 
-        if episode % 1 == 0:
+        if episode % 1000 == 0:
             img = self.render(state=state, mode='rgb_array')
             images = wandb.Image(img)
             d["figure"] = images
         
         d['episode'] = episode
+        d.update(additional_info)
         wandb.log(d)

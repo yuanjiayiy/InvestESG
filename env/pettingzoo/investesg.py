@@ -459,7 +459,7 @@ class InvestESG(ParallelEnv):
         """Get reward for all agents."""
         rewards = {}
         for i, company in enumerate(self.companies):
-            rewards[f"company_{i}"] = company.capital_gain #TODO: ideally, we should remove investor principals from company capitals
+            rewards[f"company_{i}"] = company.capital_gain # ideally, we should remove investor principals from company capitals
         for i, investor in enumerate(self.investors):
             rewards[f"investor_{i}"] = investor.utility
         return rewards
@@ -656,7 +656,7 @@ class InvestESG(ParallelEnv):
         self.canvas.flush_events()
         plt.pause(0.001)  # Pause briefly to update plots
 
-        # TODO: Consider generate videos later
+        # Consider generate videos later
         if mode == 'human':
             plt.show(block=False)
         elif mode == 'rgb_array':

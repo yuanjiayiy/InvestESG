@@ -86,7 +86,7 @@ def generate_parameters(mode, domain, debug=False, seed=None, with_expert=None, 
     if seed:
         config_default['seed'] = seed
 
-    config_default['experiment_name'] = 'MultiGrid'  # TODO: change me
+    config_default['experiment_name'] = 'MultiGrid'
 
     # Merge configs
     config_with_domain = merge_configs(config_domain, config_default)

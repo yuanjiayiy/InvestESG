@@ -32,6 +32,7 @@ class Company:
     cumu_mitigation_amount: float = 0.0
     cumu_greenwash_amount: float = 0.0
     cumu_resilience_amount: float = 0.0
+    cumu_loss_amount: float = 0.0
     margin: float = 0.0
     capital_gain: float = 0.0
     mitigation_pc: float = 0.0
@@ -40,6 +41,7 @@ class Company:
     mitigation_amount: float = 0.0
     greenwash_amount: float = 0.0
     resilience_amount: float = 0.0
+    loss_amount: float = 0.0
     esg_score: float = 0.0
     greenwash_esg_coef: float = 2.0
 
@@ -56,6 +58,7 @@ class Company:
         cumu_mitigation_amount=0.0,
         cumu_greenwash_amount=0.0,
         cumu_resilience_amount=0.0,
+        cumu_loss_amount=0.0,
         margin=0.0,
         capital_gain=0.0,
         mitigation_pc=0.0,
@@ -111,7 +114,7 @@ class Company:
         )
 
 
-    def update_capital(self, state):
+    def update_capital(self, state, uncertain_damage):
         """Update the capital based on market performance and climate event."""
         # add a random disturbance to market performance
         company_performance = random.normal(random.PRNGKey(0), shape=()) * self.beta + state.market_performance
@@ -119,24 +122,29 @@ class Company:
         # New capital considering mitigation, resilience, and greenwashing investments
         new_capital = self.capital * (1 - self.mitigation_pc - self.resilience_pc - self.greenwash_pc) * company_performance
         # Climate event impact on capital
-        new_capital = jax.lax.cond(
+        new_capital_after_climate_event = jax.lax.cond(
             state.climate_event_occurrence > 0,
-            lambda _: new_capital * (1.0 - self.resilience * state.climate_event_occurrence.astype('float32')),  # if num_investments is 0, return 0
+            lambda _: new_capital * (1.0 - (self.resilience * (1.0 - state.uncertain_economic_damage) + state.uncertain_economic_damage * uncertain_damage) * state.climate_event_occurrence.astype('float32')),  # if num_investments is 0, return 0
             lambda _: new_capital,  # else calculate the investment amount
             None
         )
 
+        loss_amount = new_capital_after_climate_event - new_capital
+        cumu_loss_amount = self.cumu_loss_amount + loss_amount
+
         # Calculate margin and capital gain
-        capital_gain = new_capital - self.capital
+        capital_gain = new_capital_after_climate_event - self.capital
         margin = capital_gain / self.capital
         # Check if bankrupt
-        bankrupt = new_capital <= 0.0
+        bankrupt = new_capital_after_climate_event <= 0.0
         # Return a new object with updated capital, gain, margin, and bankruptcy status
         return self.replace(
-            capital=new_capital,
+            capital=new_capital_after_climate_event,
             capital_gain=capital_gain,
             margin=margin,
-            bankrupt=bankrupt
+            bankrupt=bankrupt,
+            loss_amount=loss_amount,
+            cumu_loss_amount=cumu_loss_amount
         )
     
     def reset(self):
@@ -153,6 +161,8 @@ class Company:
             cumu_resilience_amount=.0,
             cumu_mitigation_amount=.0,
             cumu_greenwash_amount=.0,
+            cumu_loss_amount=.0,
+            loss_amount=.0,
             margin=.0,
             capital_gain=.0,
             esg_score=.0,
@@ -167,6 +177,7 @@ class Investor:
     capital: float = 6.0
     esg_preference: float = 0.0
     utility: float = 0.0
+
 
     def initialize_investor(self, capital=6.0, esg_preference=0.0):
         capital, esg_preference, utility = float(capital), float(esg_preference), float(0.0)
@@ -280,6 +291,7 @@ class State:
     history_esg_investment: chex.Array
     history_greenwash_investment: chex.Array
     history_resilience_investment: chex.Array
+    history_loss_amount: chex.Array
     history_climate_risk: chex.Array
     history_climate_event_occurs: chex.Array
     history_market_performance: chex.Array
@@ -288,10 +300,12 @@ class State:
     history_company_mitigation_amount: chex.Array
     history_company_greenwash_amount: chex.Array
     history_company_resilience_amount: chex.Array
+    history_company_loss_amount: chex.Array
     history_company_climate_risk: chex.Array
     history_company_esg_score: chex.Array
     history_company_margin: chex.Array
     history_company_rewards: chex.Array
+    history_company_bankrupt: chex.Array
     history_investor_capitals: chex.Array
     history_investor_utility: chex.Array
     history_investor_rewards: chex.Array
@@ -301,6 +315,8 @@ class State:
     investors: List[Investor]
     market_performance: float = 1.0
     climate_event_occurrence: int = 0
+    uncertain_economic_damage: int = 0
+    new_bankrupt_standard: bool = False
     
     
     
@@ -329,10 +345,22 @@ class InvestESG(MultiAgentEnv):
         avg_esg_score_observable=False,
         esg_spending_observable=False,
         resilience_spending_observable=False,
+        locked_period=1,
+        real_data_seeding=False,
+        uncertain_economic_damage=False,
+        new_bankrupt_standard=False,
+        fixed_random_seed=True,
         **kwargs
     ):
         self.max_steps = max_steps
         self.timestamp = 0
+
+        # additional configurations
+        self.locked_period = locked_period # Agent action will be locked-in for this period of time, default to 1
+        self.real_data_seeding = real_data_seeding # Enforce 50% companies do hard-coded mitigation first 5 years if true, default false
+        self.uncertain_economic_damage = uncertain_economic_damage # Companies will suffer from uncertain amount of economic damage if true, default false
+        self.new_bankrupt_standard = new_bankrupt_standard # Companies have margin < -10% for 3 consecutive years will go bankrupt under new standard, default false
+        self.fixed_random_seed = fixed_random_seed # Fix the underlying across training episode, default true
 
         # initialize companies and investors based on attributes if not None
         if company_attributes is not None:
@@ -540,14 +568,16 @@ class InvestESG(MultiAgentEnv):
 
         # 4. market performance and climate event evolution
         rng_key = key
-
-        rng_heat = jax.random.key(state.time*100) # random number generator for climate event
-        rng_precip = jax.random.key(state.time*500) # random number generator for climate event
-        rng_drought = jax.random.key(state.time*1000) # random number generator for climate event
-
-        # _, rng_heat = jax.random.split(key) # random number generator for climate event
-        # _, rng_precip = jax.random.split(rng_heat) # random number generator for climate event
-        # _, rng_drought = jax.random.split(rng_precip) # random number generator for climate event
+        if self.fixed_random_seed:
+            rng_heat = jax.random.key(state.time * 100) # random number generator for heat event
+            rng_precip = jax.random.key(state.time * 500) # random number generator for flood event
+            rng_drought = jax.random.key(state.time * 1000) # random number generator for drought event
+        
+        else:
+            _, rng_heat = jax.random.split(key) # random number generator for heat event
+            _, rng_precip = jax.random.split(rng_heat) # random number generator for flood event
+            _, rng_drought = jax.random.split(rng_precip) # random number generator for drought event
+        
         rng_key, rng_key1, rng_key2 = random.split(rng_key, 3)
         
         new_market_performance = random.normal(rng_key1) * self.market_performance_variance + self.market_performance_baseline
@@ -556,21 +586,18 @@ class InvestESG(MultiAgentEnv):
         drought_event = (random.uniform(rng_drought) < state.drought_prob).astype(int)
         
         climate_event_occurrence = heat_event + precip_event + drought_event
-        climate_event_occurrence = jnp.array(0)
-        # jax.debug.print("random number {} {} {} {}", random.normal(rng_key1), random.uniform(rng_heat), random.uniform(rng_precip), random.uniform(rng_drought))
-        # jax.debug.print("new_market_performance {} {} {} {} {}", new_market_performance, climate_event_occurrence, state.heat_prob, state.precip_prob, state.drought_prob)
-        #jax.debug.breakpoint()
+        
         state = state.replace(
             market_performance=new_market_performance,
             climate_event_occurrence=climate_event_occurrence
         )
 
         # 5. companies update capital based on market performance and climate event
+        keys = random.split(key, num=3)
         for company_idx, company in enumerate(companies):
-            companies[company_idx] = self._update_company_capital(company, state)
+            companies[company_idx] = self._update_company_capital(company, state, keys[company_idx])
         state = state.replace(companies=companies)
-        # jax.debug.breakpoint()
-        # jax.debug.print("companies {}", [company.capital for company in state.companies])
+        
         # 6. investors calculate returns based on market performance
         for investor_idx, investor in enumerate(investors):
             investors[investor_idx] = self._calculate_investor_utility(self._update_investor_returns(investor, state), state)
@@ -579,6 +606,10 @@ class InvestESG(MultiAgentEnv):
         # 7. update history
         state = self._update_history(state)
 
+        # Check bankrupt
+        if self.new_bankrupt_standard:
+            state = self._update_bankrupt(state)
+
         # 8. termination and truncation
         state = state.replace(time=state.time + 1)
         done = self.is_terminal(state)
@@ -586,26 +617,17 @@ class InvestESG(MultiAgentEnv):
         dones = self._get_dones(done)
 
         infos = self._get_infos()
-        # if state.terminal:
-        #     state = state.reset()
 
         return (self._get_observation(state), state, self._get_reward(state), dones, infos)
 
 
     def _divest_investor(self, state, investor):
-        # jax.debug.print("Carry: {}, investor: {}", state, investor)
         # Vectorized function to apply divestment across all companies
         def divest_company(company_idx, state):
             return investor.divest(company_idx, state)
         
         for i in range(self.num_companies):
             investor, state = divest_company(i, state)
-        # Vectorize divestment across all companies in investor's investments
-        # new_investor, new_state = jax.lax.scan(
-        #     lambda carry, company_idx: divest_company(company_idx, carry),
-        #     state,
-        #     np.arange(num_companies)
-        # )
         return state, investor
     
     def _process_investor_actions(self, investor: Investor, investor_action: jnp.array, companies: List[Company]):
@@ -647,11 +669,26 @@ class InvestESG(MultiAgentEnv):
         )
         return updated_company
 
-    def _update_company_capital(self, company, state):
+    def _update_company_capital(self, company, state, key):
+        def get_uncertain_damage():
+            mean = company.resilience  # 7%
+            std_dev = 0.1  # Spread around the mean
+            random_value = jax.random.normal(key, shape=()) * std_dev + mean
+            random_value = jax.lax.cond(
+                jnp.any(jnp.isnan(random_value)),
+                lambda _: mean,
+                lambda _: random_value,
+                None
+            )
+            random_value = jnp.clip(random_value, 0.0, 1.0)  # Clip to stay in range
+            # Check if the result is NaN
+            return random_value
+        
+
         updated_company = jax.lax.cond(
             company.bankrupt,
             lambda _: company,
-            lambda _: company.update_capital(state),
+            lambda _: company.update_capital(state, get_uncertain_damage()),
             None
         )
         return updated_company
@@ -692,7 +729,6 @@ class InvestESG(MultiAgentEnv):
         company_obs = vectorized_get_company_obs()
         investor_obs = vectorized_get_vestor_obs()
         
-        # TODO: Add climate data
         climate_obs = jnp.zeros(3)
         if self.climate_observable:
             climate_obs = jnp.array([state.climate_risk, state.climate_event_occurrence.astype('float32'), state.market_performance])
@@ -759,11 +795,14 @@ class InvestESG(MultiAgentEnv):
             climate_event_occurrence=0,
             companies=updated_companies,
             investors=updated_investors,
+            uncertain_economic_damage=self.uncertain_economic_damage,
+            new_bankrupt_standard=self.new_bankrupt_standard,
 
             # Initialize history arrays with zeros, sized according to self.max_steps
             history_esg_investment=jnp.zeros(self.max_steps),
             history_greenwash_investment=jnp.zeros(self.max_steps),
             history_resilience_investment=jnp.zeros(self.max_steps),
+            history_loss_amount=jnp.zeros(self.max_steps),
             history_climate_risk=jnp.zeros(self.max_steps),
             history_climate_event_occurs=jnp.zeros(self.max_steps, dtype=int),
             history_market_performance=jnp.zeros(self.max_steps),
@@ -774,10 +813,12 @@ class InvestESG(MultiAgentEnv):
             history_company_mitigation_amount=jnp.zeros((self.num_companies, self.max_steps)),
             history_company_greenwash_amount=jnp.zeros((self.num_companies, self.max_steps)),
             history_company_resilience_amount=jnp.zeros((self.num_companies, self.max_steps)),
+            history_company_loss_amount=jnp.zeros((self.num_companies, self.max_steps)),
             history_company_climate_risk=jnp.zeros((self.num_companies, self.max_steps)),
             history_company_esg_score=jnp.zeros((self.num_companies, self.max_steps)),
             history_company_margin=jnp.zeros((self.num_companies, self.max_steps)),
             history_company_rewards=jnp.zeros((self.num_companies, self.max_steps)),
+            history_company_bankrupt=jnp.zeros((self.num_companies, self.max_steps)),
 
             # Investor-related histories initialized with size [self.num_investors, self.max_steps]
             history_investor_capitals=jnp.zeros((self.num_investors, self.max_steps)),
@@ -797,6 +838,23 @@ class InvestESG(MultiAgentEnv):
     def name(self) -> str:
         """Environment name."""
         return "InvestESG"
+
+    def _update_bankrupt(self, state: State):
+         # Loop over companies and update their respective histories
+        companies = state.companies
+        for company_idx, company in enumerate(state.companies):
+            margin = state.history_company_margin[company_idx, state.time]
+            margin_last_year = state.history_company_margin[company_idx, state.time-1]
+            margin_year_before = state.history_company_margin[company_idx, state.time-2]
+            margins = jnp.array([margin_year_before, margin_last_year, margin])
+            companies[company_idx] = jax.lax.cond(
+                jnp.all(margins < -0.1),
+                lambda _: company.replace(bankrupt=True),
+                lambda _: company,
+                None
+            )
+        return state.replace(companies=companies)
+
     
     def _update_history(self, state: State):
         """Update historical data."""
@@ -807,6 +865,9 @@ class InvestESG(MultiAgentEnv):
         ),
             history_resilience_investment=state.history_resilience_investment.at[state.time].set(
             sum(company.cumu_resilience_amount for company in state.companies)
+        ),
+            history_loss_amount=state.history_loss_amount.at[state.time].set(
+            sum(company.cumu_loss_amount for company in state.companies)
         ),
         history_climate_risk=state.history_climate_risk.at[state.time].set(state.climate_risk),
         history_climate_event_occurs=state.history_climate_event_occurs.at[state.time].set(state.climate_event_occurrence),
@@ -825,10 +886,12 @@ class InvestESG(MultiAgentEnv):
                 history_company_mitigation_amount=state.history_company_mitigation_amount.at[i, state.time].set(company.mitigation_amount),
                 history_company_greenwash_amount=state.history_company_greenwash_amount.at[i, state.time].set(company.greenwash_amount),
                 history_company_resilience_amount=state.history_company_resilience_amount.at[i, state.time].set(company.resilience_amount),
+                history_company_loss_amount=state.history_company_loss_amount.at[i, state.time].set(company.loss_amount),
                 history_company_climate_risk=state.history_company_climate_risk.at[i, state.time].set(company.resilience),
                 history_company_esg_score=state.history_company_esg_score.at[i, state.time].set(company.esg_score),
                 history_company_margin=state.history_company_margin.at[i, state.time].set(company.margin),
-                history_company_rewards=state.history_company_rewards.at[i, state.time].set(reward[f"company_{i}"])
+                history_company_rewards=state.history_company_rewards.at[i, state.time].set(reward[f"company_{i}"]),
+                history_company_bankrupt=state.history_company_bankrupt.at[i, state.time].set(company.bankrupt),
             )
         # Loop over investors and update their respective histories
         for i, investor in enumerate(state.investors):
@@ -854,6 +917,7 @@ class InvestESG(MultiAgentEnv):
             self.ax = self.fig.subplots(3, 4)  # Adjusted to 2 rows and 6 columns
             plt.subplots_adjust(hspace=0.5, wspace=1)  # Increased wspace from 0.2 to 0.3
             plt.ion()  # Turn on interactive mode for plotting
+            plt.rcParams.update({'font.size': 14}) # make the font bigger
             # Generate a color for each company
             self.company_colors = plt.cm.rainbow(np.linspace(0, 1, self.num_companies))
             self.investor_colors = plt.cm.rainbow(np.linspace(0, 1, self.num_investors))
@@ -877,6 +941,7 @@ class InvestESG(MultiAgentEnv):
             history_company_mitigation_amount = state.history_company_mitigation_amount[0]
             history_company_greenwash_amount = state.history_company_greenwash_amount[0]
             history_company_resilience_amount = state.history_company_resilience_amount[0]
+            history_company_loss_amount = state.history_company_loss_amount[0]
             history_company_climate_risk = state.history_company_climate_risk[0]
             history_company_capitals = state.history_company_capitals[0]
             history_company_esg_score = state.history_company_esg_score[0]
@@ -892,6 +957,7 @@ class InvestESG(MultiAgentEnv):
             history_company_mitigation_amount = state.history_company_mitigation_amount
             history_company_greenwash_amount = state.history_company_greenwash_amount
             history_company_resilience_amount = state.history_company_resilience_amount
+            history_company_loss_amount = state.history_company_loss_amount
             history_company_climate_risk = state.history_company_climate_risk
             history_company_capitals = state.history_company_capitals
             history_company_esg_score = state.history_company_esg_score
@@ -1029,7 +1095,7 @@ class InvestESG(MultiAgentEnv):
         self.canvas.flush_events()
         # plt.pause(0.001)  # Pause briefly to update plots
 
-        # TODO: Consider generate videos later
+        # Consider generate videos later
         if mode == 'human':
             plt.show(block=False)
         elif mode == 'rgb_array':
