@@ -1,6 +1,6 @@
 from dataclasses import field, replace
 from functools import partial
-from typing import Any, Dict, List, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 import jax
 import jax.numpy as jnp
 from jax import random
@@ -355,13 +355,6 @@ class InvestESG(MultiAgentEnv):
         self.max_steps = max_steps
         self.timestamp = 0
 
-        # additional configurations
-        self.locked_period = locked_period # Agent action will be locked-in for this period of time, default to 1
-        self.real_data_seeding = real_data_seeding # Enforce 50% companies do hard-coded mitigation first 5 years if true, default false
-        self.uncertain_economic_damage = uncertain_economic_damage # Companies will suffer from uncertain amount of economic damage if true, default false
-        self.new_bankrupt_standard = new_bankrupt_standard # Companies have margin < -10% for 3 consecutive years will go bankrupt under new standard, default false
-        self.fixed_random_seed = fixed_random_seed # Fix the underlying across training episode, default true
-
         # initialize companies and investors based on attributes if not None
         if company_attributes is not None:
             self.companies = [Company().initialize_company(**attributes) for attributes in company_attributes]
@@ -402,6 +395,14 @@ class InvestESG(MultiAgentEnv):
         self.avg_esg_score_observable = avg_esg_score_observable # whethter to include company avg esg socre in the observation space
         self.esg_spending_observable = esg_spending_observable # whether to include company esg spending (mitigation + greenwash spending) in the observation space
         self.resilience_spending_observable = resilience_spending_observable # whether to include company resilience spending in the observation space
+
+        # Additional configurations
+        self.locked_period = locked_period # Agent action will be locked-in for this period of time, default to 1
+        self.real_data_seeding = real_data_seeding # Enforce 50% companies do hard-coded mitigation first 5 years if true, default false
+        self.uncertain_economic_damage = uncertain_economic_damage # Companies will suffer from uncertain amount of economic damage if true, default false
+        self.new_bankrupt_standard = new_bankrupt_standard # Companies have margin < -10% for 3 consecutive years will go bankrupt under new standard, default false
+        self.fixed_random_seed = fixed_random_seed # Fix the underlying across training episode, default true
+
         # initialize investors with initial investments dictionary
         for idx, investor in enumerate(self.investors):
             self.investors[idx] = investor.initial_investment(self)
@@ -432,53 +433,39 @@ class InvestESG(MultiAgentEnv):
     def get_investors(self, state: State):
         return {f'investor_{k}': v for k, v in enumerate(state.investors)}
     
-    def lose_investment(self, state, company_idx, amount):
-        """Lose investment due to climate event."""
-        capital = state.companies_capitals.at[company_idx].get()
-        return state.replace(companies_capitals=state.companies_capitals.at[company_idx].set(capital - amount))
-    
-    def receive_investment(self, state, company_idx, amount):
-        """Receive investment from investors."""
-        capital = state.companies_capitals.at[company_idx].get()
-        return state.replace(companies_capitals=state.companies_capitals.at[company_idx].set(capital + amount))
-    
-    def make_esg_decision(self, state, company_idx, mitigation_pc, greenwash_pc, resilience_pc):
-        """Make a decision on how to allocate capital."""
-        # Calculate updated investment amounts for a single period
-        capital = state.companies_capitals.at[company_idx].get()
-        mitigation_amount = mitigation_pc * capital
-        greenwash_amount = greenwash_pc * capital
-        resilience_amount = resilience_pc * capital
-
-        # Calculate updated cumulative investment
-        cumu_mitigation_amount = self.cumu_mitigation_amount + mitigation_amount
-        cumu_greenwash_amount = self.cumu_greenwash_amount + greenwash_amount
-        cumu_resilience_amount = self.cumu_resilience_amount + resilience_amount
-
-        # Update resilience
-        resilience = self.initial_resilience * jnp.exp(
-            -self.resilience_incr_rate * (cumu_resilience_amount / self.capital)
-        )
-
-        # Update ESG score
-        esg_score = mitigation_pc + greenwash_pc * self.companies[company_idx].greenwash_esg_coef
-
-        # Return a new instance of the object with updated values
-        return self.replace(
-            mitigation_amount=mitigation_amount,
-            greenwash_amount=greenwash_amount,
-            resilience_amount=resilience_amount,
-            cumu_mitigation_amount=cumu_mitigation_amount,
-            cumu_greenwash_amount=cumu_greenwash_amount,
-            cumu_resilience_amount=cumu_resilience_amount,
-            resilience=resilience,
-            esg_score=esg_score
-        )
-    
     def is_terminal(self, state: State) -> bool:
         """Check whether state is terminal."""
         done_steps = state.time >= self.max_steps
         return done_steps | state.terminal
+
+    @partial(jax.jit, static_argnums=(0,))
+    def step(
+        self,
+        key: chex.PRNGKey,
+        state: State,
+        actions: Dict[str, chex.Array],
+        reset_state: Optional[State] = None,
+    ) -> Tuple[Dict[str, chex.Array], State, Dict[str, float], Dict[str, bool], Dict]:
+        """Performs step transitions in the environment. Resets the environment if done.
+        To control the reset state, pass `reset_state`. Otherwise, the environment will reset randomly."""
+
+        key, key_reset = jax.random.split(key)
+        obs_st, states_st, rewards, dones, infos = self.step_env(key, state, actions)
+
+        if reset_state is None:
+            obs_re, states_re = self.reset(key_reset)
+        else:
+            states_re = reset_state
+            obs_re = self.get_obs(states_re)
+
+        # Auto-reset environment based on termination
+        states = jax.tree_map(
+            lambda x, y: jax.lax.select(dones["__all__"], x, y), states_st, states_st
+        )
+        obs = jax.tree_map(
+            lambda x, y: jax.lax.select(dones["__all__"], x, y), obs_st, obs_st
+        )
+        return obs, states, rewards, dones, infos
     
     def step_env(
             self,
