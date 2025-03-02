@@ -24,7 +24,8 @@ if __name__ == '__main__':
     controller = IPPOController([args], env_fn=env_fn, model_config_lst=[model_config])
     import jax
     import jax.numpy as jnp
-    rng = jax.random.key(0)
+    rng = jax.random.key(config.seed)
+    
     if args.eval_points > 0:
         eval_at_steps = list((np.arange(args.eval_points + 1) * args.total_env_steps / args.eval_points).astype(int))
     else:
