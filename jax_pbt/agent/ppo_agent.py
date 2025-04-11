@@ -236,8 +236,8 @@ class PPOAgent(struct.PyTreeNode):
         """
         pi: Distribution
         rnn_state, pi = self.actor_fn.apply(actor_params, buffer.agent_state.actor_rnn_state[0], buffer.obs) # [L, B, *A]
-        print(self.agent_name, buffer.action[self.agent_name])
-        import pdb; pdb.set_trace()
+        # print(self.agent_name, buffer.action[self.agent_name])
+        # import pdb; pdb.set_trace()
         log_p = pi.log_prob(buffer.action[self.agent_name]) # [L, B]
         if len(log_p.shape) > 2:
             log_p = jnp.sum(log_p, axis=2)
