@@ -2,7 +2,6 @@
 domain: InvestESG
 num_investors: 3
 num_companies: 5
-fixed_random_seed: False
 initial_climate_event_probability: 0.5
 market_performance_baseline: 1.1
 market_performance_variance: 0
