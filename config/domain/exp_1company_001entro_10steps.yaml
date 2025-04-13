@@ -30,11 +30,11 @@ investor_attributes:
 agent_policies:
  - mode: "PPO"
    clip_eps: 0.2
-   entropy_coef: 0.01
+   entropy_coef: 0.03
    value_loss_coef: 0.5
  - mode: "PPO"
    clip_eps: 0.2
-   entropy_coef: 0.01
+   entropy_coef: 0.03
    value_loss_coef: 0.5
 #  - mode: "PPO"
 #    clip_eps: 0.2
