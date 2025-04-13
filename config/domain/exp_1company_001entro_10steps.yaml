@@ -16,7 +16,7 @@ company_attributes:
    beta: 0
 
 investor_attributes:
- - capital: 10
+ - capital: 0
    esg_preference: 0
 #  - capital: 10
 #    esg_preference: 100

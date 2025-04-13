@@ -542,9 +542,9 @@ class InvestESG(MultiAgentEnv):
 
         # 3. update probabilities of climate event based on cumulative ESG investments across companies
         total_mitigation_investment = jnp.sum(jnp.array([company.cumu_mitigation_amount for company in state.companies]))
-        heat_prob = self.initial_heat_prob + 0.083*state.time/(1+0.0222*total_mitigation_investment)
-        precip_prob = self.initial_precip_prob + 0.018*state.time/(1+0.0326*total_mitigation_investment)
-        drought_prob = self.initial_drought_prob + 0.03*state.time/(1+0.038*total_mitigation_investment)
+        heat_prob = self.initial_heat_prob + 0.0083*state.time/(1+0.0222*total_mitigation_investment)
+        precip_prob = self.initial_precip_prob + 0.0018*state.time/(1+0.0326*total_mitigation_investment)
+        drought_prob = self.initial_drought_prob + 0.003*state.time/(1+0.038*total_mitigation_investment)
         climate_risk = 1 - (1-heat_prob)*(1-precip_prob)*(1-drought_prob)
         state = state.replace(
             heat_prob = heat_prob,
