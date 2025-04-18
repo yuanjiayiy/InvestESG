@@ -1,0 +1,63 @@
+# InvestESG
+domain: InvestESG
+num_investors: 1
+num_companies: 1
+initial_climate_event_probability: 0.5
+market_performance_baseline: 2.6
+market_performance_variance: 0
+allow_resilience_investment: False
+allow_greenwash_investment: False
+company_esg_score_observable: True
+action_capping: 0.05
+max_steps: 10
+fixed_random_seed: False
+company_attributes:
+ - capital: 100
+   climate_risk_exposure: 0.07
+   beta: 0
+
+investor_attributes:
+ - capital: 0
+   esg_preference: 0
+#  - capital: 10
+#    esg_preference: 100
+#  - capital: 10
+#    esg_preference: 100
+#  - capital: 10
+#    esg_preference: 100
+#  - capital: 10
+#    esg_preference: 100
+
+agent_policies:
+ - mode: "PPO"
+   clip_eps: 0.2
+   entropy_coef: 0.03
+   value_loss_coef: 0.5
+ - mode: "PPO"
+   clip_eps: 0.2
+   entropy_coef: 0.03
+   value_loss_coef: 0.5
+#  - mode: "PPO"
+#    clip_eps: 0.2
+#    entropy_coef: 0.01
+#    value_loss_coef: 0.5
+#  - mode: "PPO"
+#    clip_eps: 0.2
+#    entropy_coef: 0.01
+#    value_loss_coef: 0.5
+#  - mode: "PPO"
+#    clip_eps: 0.2
+#    entropy_coef: 0.01
+#    value_loss_coef: 0.5
+#  - mode: "PPO"
+#    clip_eps: 0.2
+#    entropy_coef: 0.01
+#    value_loss_coef: 0.5
+#  - mode: "PPO"
+#    clip_eps: 0.2
+#    entropy_coef: 0.01
+#    value_loss_coef: 0.5
+#  - mode: "PPO"
+#    clip_eps: 0.2
+#    entropy_coef: 0.01
+#    value_loss_coef: 0.5
